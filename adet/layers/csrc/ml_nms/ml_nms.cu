@@ -1,12 +1,17 @@
 // Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
+template <typename T>
+__host__ __device__ __forceinline__ T THCCeilDiv(T a, T b) {
+  return (a + b - 1) / b;
+}
+
 #include <ATen/ATen.h>
 #include <ATen/cuda/CUDAContext.h>
-#include <THC/THC.h>
+
 #include <THC/THCDeviceUtils.cuh>
 
 #include <vector>
 #include <iostream>
-
+#include <c10/cuda/CUDACachingAllocator.h>
 int const threadsPerBlock = sizeof(unsigned long long) * 8;
 
 __device__ inline float devIoU(float const * const a, float const * const b) {
@@ -86,13 +91,14 @@ at::Tensor ml_nms_cuda(const at::Tensor boxes, const float nms_overlap_thresh) {
 
   scalar_t* boxes_dev = boxes_sorted.data<scalar_t>();
 
-  THCState *state = at::globalContext().lazyInitCUDA(); // TODO replace with getTHCState
+  // THCState *state = at::globalContext().lazyInitCUDA(); // TODO replace with getTHCState
 
   unsigned long long* mask_dev = NULL;
   //THCudaCheck(THCudaMalloc(state, (void**) &mask_dev,
   //                      boxes_num * col_blocks * sizeof(unsigned long long)));
 
-  mask_dev = (unsigned long long*) THCudaMalloc(state, boxes_num * col_blocks * sizeof(unsigned long long));
+  // mask_dev = (unsigned long long*) THCudaMalloc(state, boxes_num * col_blocks * sizeof(unsigned long long));
+  mask_dev = (unsigned long long*) c10::cuda::CUDACachingAllocator::raw_alloc(boxes_num * col_blocks * sizeof(unsigned long long));
 
   dim3 blocks(THCCeilDiv(boxes_num, threadsPerBlock),
               THCCeilDiv(boxes_num, threadsPerBlock));
@@ -103,7 +109,7 @@ at::Tensor ml_nms_cuda(const at::Tensor boxes, const float nms_overlap_thresh) {
                                   mask_dev);
 
   std::vector<unsigned long long> mask_host(boxes_num * col_blocks);
-  THCudaCheck(cudaMemcpy(&mask_host[0],
+  AT_CUDA_CHECK(cudaMemcpy(&mask_host[0],
                         mask_dev,
                         sizeof(unsigned long long) * boxes_num * col_blocks,
                         cudaMemcpyDeviceToHost));
@@ -128,7 +134,8 @@ at::Tensor ml_nms_cuda(const at::Tensor boxes, const float nms_overlap_thresh) {
     }
   }
 
-  THCudaFree(state, mask_dev);
+  // THCudaFree(state, mask_dev);
+  c10::cuda::CUDACachingAllocator::raw_delete(mask_dev);
   // TODO improve this part
   return std::get<0>(order_t.index({
                        keep.narrow(/*dim=*/0, /*start=*/0, /*length=*/num_to_keep).to(
